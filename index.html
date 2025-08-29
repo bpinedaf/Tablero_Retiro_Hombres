@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="refresh" content="300"><!-- refresco opcional -->
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard Comunidad</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 16px; color:#111; }
+    h2 { margin: 0 0 12px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    thead th { position: sticky; top: 0; background: #f7f7f7; z-index: 1; }
+    input { padding: 8px; width: 320px; margin: 10px 0; border:1px solid #ccc; border-radius:8px; }
+    .pagado { background-color: #d4edda; }    /* verde suave */
+    .pendiente { background-color: #f8d7da; } /* rojo suave */
+    .badge { padding: 4px 8px; border-radius: 6px; font-size: 0.85em; color: #fff; }
+    .badge-verde { background-color: #28a745; }
+    .badge-rojo  { background-color: #dc3545; }
+
+    /* Controles y botones */
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom:8px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip { background:#eef1f5; padding:6px 10px; border-radius:16px; font-size:0.9em; }
+    .chip.ok { background:#d4edda; }
+    .chip.warn { background:#f8d7da; }
+    .chip.info { background:#e2e3ff; }
+    .filters { display:flex; gap:8px; }
+    .btn { padding:6px 10px; border:1px solid #ccc; border-radius:8px; background:#fff; cursor:pointer; }
+    .btn.active { border-color:#111; box-shadow:0 0 0 2px #1111 inset; }
+    .muted { color:#555; font-size:0.9em; }
+  </style>
+  <!-- Papa Parse para CSV robusto -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js" defer></script>
+</head>
+<body>
+  <h2>Dashboard de depósitos/inscripciones</h2>
+
+  <div class="muted" style="margin-bottom:10px">
+    <b>Nota:</b> Este tablero lee datos públicos de Google Sheets (solo lectura). 
+  </div>
+
+  <div class="controls">
+    <div class="chips">
+      <span class="chip">Inscritos: <b id="countTotal">0</b></span>
+      <span class="chip ok">Pagados: <b id="countPagados">0</b></span>
+      <span class="chip warn">Pendientes: <b id="countPendientes">0</b></span>
+      <span class="chip info">Mostrando: <b id="countShown">0</b></span>
+    </div>
+    <div class="filters">
+      <button class="btn active" data-filter="todos">Todos</button>
+      <button class="btn" data-filter="pagado">Pagados</button>
+      <button class="btn" data-filter="pendiente">Pendientes</button>
+    </div>
+  </div>
+
+  <input id="q" placeholder="Buscar..." />
+
+  <table id="t">
+    <thead><tr id="thead-row"></tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <script>
+    // ===== CONFIGURA ESTOS VALORES =====
+    const SHEET_ID    = "18okmDQnvtwURCOcgEvjAMWIaEe2GvxswiFQwZMTVjA4"; // <-- tu ID de Google Sheet
+    const SHEET_NAME  = "Form Responses 1"; // <-- nombre de pestaña
+    const PAID_VALUE  = 200; // <-- monto que consideras "Pagado"
+
+    // URL de CSV (gviz) pública (no requiere token):
+    // Si tu nombre de hoja tiene espacios, se codifica con %20
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SHEET_NAME)}`;
+
+    // Estado UI
+    let currentFilter = 'todos';
+    let headers = [];
+    let rows = [];
+
+    // Helpers
+    const el = (sel) => document.querySelector(sel);
+    const elAll = (sel) => Array.from(document.querySelectorAll(sel));
+
+    function numberFrom(val) {
+      if (val == null) return 0;
+      // Quita símbolos comunes: Q, $, comas, espacios
+      const clean = String(val).replace(/[Q$\s,]/g, '');
+      const n = parseFloat(clean);
+      return isNaN(n) ? 0 : n;
+    }
+
+    function computePaid(rowObj) {
+      // Busca una columna "Valor" (como en tu Apps Script original).
+      // Si no existe, intenta "Monto" o "Pago" como fallback.
+      const val = rowObj["Valor"] ?? rowObj["Monto"] ?? rowObj["Pago"] ?? 0;
+      return numberFrom(val) === PAID_VALUE;
+    }
+
+    function renderTable() {
+      const theadRow = el("#thead-row");
+      const tbody = el("#tbody");
+      theadRow.innerHTML = "";
+      tbody.innerHTML = "";
+
+      // Cabezeras + "Estado"
+      headers.forEach(h => {
+        const th = document.createElement("th");
+        th.textContent = h;
+        theadRow.appendChild(th);
+      });
+      const thEstado = document.createElement("th");
+      thEstado.textContent = "Estado";
+      theadRow.appendChild(thEstado);
+
+      // Filas
+      rows.forEach(r => {
+        const paid = computePaid(r);
+        const tr = document.createElement("tr");
+        tr.className = paid ? "pagado" : "pendiente";
+
+        headers.forEach(h => {
+          const td = document.createElement("td");
+          td.textContent = r[h] ?? "";
+          tr.appendChild(td);
+        });
+
+        const tdEstado = document.createElement("td");
+        tdEstado.innerHTML = paid
+          ? '<span class="badge badge-verde">✅ Pagado</span>'
+          : '<span class="badge badge-rojo">⛔ Pendiente</span>';
+        tr.appendChild(tdEstado);
+
+        tbody.appendChild(tr);
+      });
+
+      updateStaticCounts();
+      applyFilter();
+    }
+
+    function updateStaticCounts(){
+      const total = elAll('#t tbody tr').length;
+      const pagados = elAll('#t tbody tr.pagado').length;
+      const pendientes = elAll('#t tbody tr.pendiente').length;
+      el('#countTotal').innerText = total;
+      el('#countPagados').innerText = pagados;
+      el('#countPendientes').innerText = pendientes;
+    }
+
+    function applyFilter(){
+      const q = el('#q').value.toLowerCase();
+      let shown = 0;
+      elAll('#t tbody tr').forEach(tr => {
+        const matchesQuery = tr.innerText.toLowerCase().includes(q);
+        const matchesState = currentFilter === 'todos' || tr.classList.contains(currentFilter);
+        const show = matchesQuery && matchesState;
+        tr.style.display = show ? '' : 'none';
+        if (show) shown++;
+      });
+      el('#countShown').innerText = shown;
+    }
+
+    function setFilter(filter, btn){
+      currentFilter = filter;
+      elAll('.filters .btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      applyFilter();
+    }
+
+    // Eventos UI
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.filters .btn');
+      if (!btn) return;
+      const f = btn.getAttribute('data-filter');
+      if (f) setFilter(f, btn);
+    });
+
+    el('#q').addEventListener('input', applyFilter);
+
+    // Carga CSV
+    window.addEventListener('load', () => {
+      Papa.parse(csvUrl, {
+        download: true,
+        header: true,
+        dynamicTyping: false,
+        complete: (result) => {
+          const data = result.data || [];
+          // Filtra posibles filas vacías al final del CSV
+          rows = data.filter(row => Object.values(row).some(v => String(v || '').trim() !== ''));
+          headers = result.meta && result.meta.fields ? result.meta.fields : Object.keys(rows[0] || {});
+          renderTable();
+        },
+        error: (err) => {
+          console.error("Error al leer CSV:", err);
+          alert("No se pudo cargar el CSV público. Verifica que la hoja esté publicada y el nombre de pestaña sea correcto.");
+        }
+      });
+    });
+  </script>
+</body>
+</html>
